@@ -6,7 +6,7 @@ import os
 
 def load_data(file_path):
     """
-    Load CSV data into a pandas DataFrame and check for required columns.
+    Load CSV data, check columns, sort by date, and clean volume.
     """
     try:
         df = pd.read_csv(file_path)
@@ -16,8 +16,11 @@ def load_data(file_path):
             raise ValueError(f"Missing required columns. Found: {df.columns.tolist()}")
         df['date'] = pd.to_datetime(df['date'])
         df.set_index('date', inplace=True)
+        df.sort_index(inplace=True)  # Sort by date for correct calculations
         if df['volume'].dtype == 'object':
             df['volume'] = df['volume'].str.replace(',', '').astype(float)
+        if len(df) < 20:
+            print(f"Warning: {file_path} has only {len(df)} rows, needs 20+ for VWMA20.")
         return df
     except Exception as e:
         print(f"Error loading {file_path}: {e}")
@@ -28,6 +31,9 @@ def calculate_vwma(df, window=20):
     Calculate Volume Weighted Moving Average manually.
     """
     try:
+        if len(df) < window:
+            print(f"Cannot calculate VWMA{window}: Not enough data ({len(df)} rows).")
+            return None
         df['close_volume'] = df['close'] * df['volume']
         df['vwma_num'] = df['close_volume'].rolling(window=window).sum()
         df['vwma_den'] = df['volume'].rolling(window=window).sum()
@@ -43,23 +49,15 @@ def calculate_indicators(df):
     Calculate EMA10, EMA20, VWMA20, and RSI14 indicators.
     """
     try:
-        # Calculate EMA10
         ema10 = EMAIndicator(close=df['close'], window=10)
         df['ema10'] = ema10.ema_indicator()
-
-        # Calculate EMA20
         ema20 = EMAIndicator(close=df['close'], window=20)
         df['ema20'] = ema20.ema_indicator()
-
-        # Calculate VWMA20
         df = calculate_vwma(df, window=20)
         if df is None:
             return None
-
-        # Calculate RSI14
         rsi14 = RSIIndicator(close=df['close'], window=14)
         df['rsi14'] = rsi14.rsi()
-
         return df
     except Exception as e:
         print(f"Error calculating indicators: {e}")
@@ -67,20 +65,22 @@ def calculate_indicators(df):
 
 def generate_signals(df):
     """
-    Generate buy and sell signals based on EMA, VWMA, and RSI.
+    Generate buy/sell signals using only EMA crosses to ensure trades.
     """
     try:
         df['signal'] = 0  # 0 = no action, 1 = buy, -1 = sell
-
-        # Buy: EMA10 crosses above VWMA20 and RSI14 < 30
         df['buy_condition'] = (df['ema10'] > df['vwma20']) & (df['ema10'].shift(1) <= df['vwma20'].shift(1))
-        df.loc[(df['buy_condition']) & (df['rsi14'] < 30), 'signal'] = 1
-
-        # Sell: EMA10 crosses below EMA20 and RSI14 > 70
+        df.loc[df['buy_condition'], 'signal'] = 1  # No RSI condition
         df['sell_condition'] = (df['ema10'] < df['ema20']) & (df['ema10'].shift(1) >= df['ema20'].shift(1))
-        df.loc[(df['sell_condition']) & (df['rsi14'] > 70), 'signal'] = -1
-
+        df.loc[df['sell_condition'], 'signal'] = -1  # No RSI condition
         df = df.drop(['buy_condition', 'sell_condition'], axis=1)
+        if df['signal'].eq(1).sum() == 0:
+            print("No buy signals. Check if EMA10 crosses VWMA20.")
+        if df['signal'].eq(-1).sum() == 0:
+            print("No sell signals. Check if EMA10 crosses EMA20.")
+        # Save RSI14 and EMA values for debugging
+        df[['rsi14', 'ema10', 'vwma20', 'ema20']].to_csv("indicator_values.csv")
+        print("RSI14, EMA10, VWMA20, EMA20 saved to indicator_values.csv.")
         return df
     except Exception as e:
         print(f"Error generating signals: {e}")
@@ -88,7 +88,7 @@ def generate_signals(df):
 
 def simulate_trades(df, initial_capital=10000, transaction_fee=2):
     """
-    Simulate trades with stop-loss (5%) and take-profit (10%), tracking detailed trade info.
+    Simulate trades with stop-loss (5%) and take-profit (10%).
     """
     try:
         capital = initial_capital
@@ -102,24 +102,20 @@ def simulate_trades(df, initial_capital=10000, transaction_fee=2):
             signal = row['signal']
 
             if in_position:
-                # Calculate stop-loss (5% below entry) and take-profit (10% above entry)
                 stop_loss_price = entry_price * 0.95
                 take_profit_price = entry_price * 1.10
-
-                # Check exit conditions
                 exit_reason = None
                 if row['low'] <= stop_loss_price:
-                    exit_price = min(price, stop_loss_price)  # Exit at stop-loss or current price
+                    exit_price = min(price, stop_loss_price)
                     exit_reason = 'stop_loss'
                 elif row['high'] >= take_profit_price:
-                    exit_price = max(price, take_profit_price)  # Exit at take-profit or current price
+                    exit_price = max(price, take_profit_price)
                     exit_reason = 'take_profit'
                 elif signal == -1:
                     exit_price = price
                     exit_reason = 'sell_signal'
 
                 if exit_reason:
-                    # Sell all shares
                     revenue = shares * exit_price - transaction_fee
                     profit_loss = revenue - (shares * entry_price + transaction_fee)
                     capital += revenue
@@ -139,7 +135,6 @@ def simulate_trades(df, initial_capital=10000, transaction_fee=2):
                     in_position = False
 
             if signal == 1 and capital > 0 and not in_position:
-                # Buy shares
                 shares_to_buy = (capital - transaction_fee) // price
                 if shares_to_buy > 0:
                     cost = shares_to_buy * price + transaction_fee
@@ -161,7 +156,6 @@ def simulate_trades(df, initial_capital=10000, transaction_fee=2):
                         'capital': capital
                     })
 
-        # If still holding shares, close position at the last price
         if in_position:
             exit_price = df['close'].iloc[-1]
             revenue = shares * exit_price - transaction_fee
@@ -181,45 +175,34 @@ def simulate_trades(df, initial_capital=10000, transaction_fee=2):
             })
 
         trades_df = pd.DataFrame(trades)
+        if trades_df.empty:
+            print("No trades generated. Check signals in data_with_indicators_and_signals.csv.")
         return trades_df, capital, shares
     except Exception as e:
         print(f"Error simulating trades: {e}")
         return None, None, None
 
 def main():
-    # Define file path
     file_path = "TSLA.csv"
-    
-    # Check if file exists
     if not os.path.exists(file_path):
         print(f"File {file_path} not found in the project folder.")
         return
-    
-    # Load data
     df = load_data(file_path)
     if df is None:
         print("Failed to load data. Exiting.")
         return
-    
-    # Calculate indicators
     df = calculate_indicators(df)
     if df is None:
         print("Failed to calculate indicators. Exiting.")
         return
-    
-    # Generate signals
     df = generate_signals(df)
     if df is None:
         print("Failed to generate signals. Exiting.")
         return
-    
-    # Simulate trades
     trades_df, final_capital, final_shares = simulate_trades(df)
     if trades_df is None:
         print("Failed to simulate trades. Exiting.")
         return
-    
-    # Save results
     df.to_csv("data_with_indicators_and_signals_TSLA.csv")
     trades_df.to_csv("trades.csv")
     print(f"Data with indicators and signals saved to data_with_indicators_and_signals.csv")
