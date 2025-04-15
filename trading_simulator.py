@@ -188,7 +188,7 @@ def simulate_trades(df, initial_capital=10000, transaction_fee=2):
 
 def main():
     # Define file path
-    file_path = "CSV.csv"
+    file_path = "TSLA.csv"
     
     # Check if file exists
     if not os.path.exists(file_path):
@@ -220,7 +220,7 @@ def main():
         return
     
     # Save results
-    df.to_csv("data_with_indicators_and_signals.csv")
+    df.to_csv("data_with_indicators_and_signals_TSLA.csv")
     trades_df.to_csv("trades.csv")
     print(f"Data with indicators and signals saved to data_with_indicators_and_signals.csv")
     print(f"Trades saved to trades.csv")
