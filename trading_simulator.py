@@ -9,18 +9,13 @@ def load_data(file_path):
     Load CSV data into a pandas DataFrame and check for required columns.
     """
     try:
-        # Read CSV file
         df = pd.read_csv(file_path)
-        # Convert column names to lowercase for consistency
         df.columns = df.columns.str.lower().str.strip()
-        # Check for required columns
         required_cols = ['date', 'open', 'high', 'low', 'close', 'volume']
         if not all(col in df.columns for col in required_cols):
             raise ValueError(f"Missing required columns. Found: {df.columns.tolist()}")
-        # Convert date to datetime and set as index
         df['date'] = pd.to_datetime(df['date'])
         df.set_index('date', inplace=True)
-        # Clean volume: remove commas and convert to numeric
         if df['volume'].dtype == 'object':
             df['volume'] = df['volume'].str.replace(',', '').astype(float)
         return df
@@ -31,17 +26,12 @@ def load_data(file_path):
 def calculate_vwma(df, window=20):
     """
     Calculate Volume Weighted Moving Average manually.
-    VWMA = Sum(Close * Volume) / Sum(Volume) over the window.
     """
     try:
-        # Calculate Close * Volume
         df['close_volume'] = df['close'] * df['volume']
-        # Calculate rolling sum of Close * Volume and Volume
         df['vwma_num'] = df['close_volume'].rolling(window=window).sum()
         df['vwma_den'] = df['volume'].rolling(window=window).sum()
-        # Calculate VWMA
         df['vwma20'] = df['vwma_num'] / df['vwma_den']
-        # Drop temporary columns
         df = df.drop(['close_volume', 'vwma_num', 'vwma_den'], axis=1)
         return df
     except Exception as e:
@@ -50,14 +40,18 @@ def calculate_vwma(df, window=20):
 
 def calculate_indicators(df):
     """
-    Calculate EMA10, VWMA20, and RSI14 indicators.
+    Calculate EMA10, EMA20, VWMA20, and RSI14 indicators.
     """
     try:
         # Calculate EMA10
         ema10 = EMAIndicator(close=df['close'], window=10)
         df['ema10'] = ema10.ema_indicator()
 
-        # Calculate VWMA20 manually
+        # Calculate EMA20 (needed for sell signal)
+        ema20 = EMAIndicator(close=df['close'], window=20)
+        df['ema20'] = ema20.ema_indicator()
+
+        # Calculate VWMA20
         df = calculate_vwma(df, window=20)
         if df is None:
             return None
@@ -70,6 +64,82 @@ def calculate_indicators(df):
     except Exception as e:
         print(f"Error calculating indicators: {e}")
         return None
+
+def generate_signals(df):
+    """
+    Generate buy and sell signals based on EMA, VWMA, and RSI.
+    """
+    try:
+        # Initialize signal column
+        df['signal'] = 0  # 0 = no action, 1 = buy, -1 = sell
+
+        # Buy: EMA10 crosses above VWMA20 and RSI14 < 30
+        # Cross above: EMA10 > VWMA20 today and EMA10 <= VWMA20 yesterday
+        df['buy_condition'] = (df['ema10'] > df['vwma20']) & (df['ema10'].shift(1) <= df['vwma20'].shift(1))
+        df.loc[(df['buy_condition']) & (df['rsi14'] < 30), 'signal'] = 1
+
+        # Sell: EMA10 crosses below EMA20 and RSI14 > 70
+        # Cross below: EMA10 < EMA20 today and EMA10 >= EMA20 yesterday
+        df['sell_condition'] = (df['ema10'] < df['ema20']) & (df['ema10'].shift(1) >= df['ema20'].shift(1))
+        df.loc[(df['sell_condition']) & (df['rsi14'] > 70), 'signal'] = -1
+
+        # Clean up temporary columns
+        df = df.drop(['buy_condition', 'sell_condition'], axis=1)
+
+        return df
+    except Exception as e:
+        print(f"Error generating signals: {e}")
+        return None
+
+def simulate_trades(df, initial_capital=10000, transaction_fee=2):
+    """
+    Simulate trades based on signals, tracking capital and shares.
+    """
+    try:
+        capital = initial_capital
+        shares = 0
+        trades = []
+
+        for date, row in df.iterrows():
+            price = row['close']
+            signal = row['signal']
+
+            if signal == 1 and capital > 0:  # Buy
+                # Calculate how many shares we can buy
+                shares_to_buy = (capital - transaction_fee) // price
+                if shares_to_buy > 0:
+                    cost = shares_to_buy * price + transaction_fee
+                    capital -= cost
+                    shares += shares_to_buy
+                    trades.append({
+                        'date': date,
+                        'type': 'buy',
+                        'price': price,
+                        'shares': shares_to_buy,
+                        'capital': capital,
+                        'total_shares': shares
+                    })
+
+            elif signal == -1 and shares > 0:  # Sell
+                # Sell all shares
+                revenue = shares * price - transaction_fee
+                capital += revenue
+                trades.append({
+                    'date': date,
+                    'type': 'sell',
+                    'price': price,
+                    'shares': shares,
+                    'capital': capital,
+                    'total_shares': 0
+                })
+                shares = 0
+
+        # Convert trades to DataFrame
+        trades_df = pd.DataFrame(trades)
+        return trades_df, capital, shares
+    except Exception as e:
+        print(f"Error simulating trades: {e}")
+        return None, None, None
 
 def main():
     # Define file path
@@ -92,10 +162,24 @@ def main():
         print("Failed to calculate indicators. Exiting.")
         return
     
-    # Save results to a new CSV
-    output_path = "data_with_indicators_TSLA.csv"
-    df.to_csv(output_path)
-    print(f"Data with indicators saved to {output_path}")
+    # Generate signals
+    df = generate_signals(df)
+    if df is None:
+        print("Failed to generate signals. Exiting.")
+        return
+    
+    # Simulate trades
+    trades_df, final_capital, final_shares = simulate_trades(df)
+    if trades_df is None:
+        print("Failed to simulate trades. Exiting.")
+        return
+    
+    # Save results
+    df.to_csv("data_with_indicators_and_signals_TSLA.csv")
+    trades_df.to_csv("trades.csv")
+    print(f"Data with indicators and signals saved to data_with_indicators_and_signals.csv")
+    print(f"Trades saved to trades.csv")
+    print(f"Final capital: {final_capital:.2f}, Final shares: {final_shares}")
 
 if __name__ == "__main__":
     main()
