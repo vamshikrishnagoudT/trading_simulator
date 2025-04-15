@@ -1,0 +1,5 @@
+Total Trades: 6
+Total Profit/Loss: 3042.872500000005
+Wins: 4
+Losses: 2
+Win/Loss Ratio: 2.0
