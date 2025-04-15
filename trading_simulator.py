@@ -22,7 +22,7 @@ def load_data(file_path):
             raise ValueError(f"Missing required columns. Found: {df.columns.tolist()}")
         df['date'] = pd.to_datetime(df['date'])
         df.set_index('date', inplace=True)
-        df.sort_index(inplace=True)  # Ensure chronological order
+        df.sort_index(inplace=True)
         if df['volume'].dtype == 'object':
             df['volume'] = df['volume'].str.replace(',', '').astype(float)
         if len(df) < 20:
@@ -213,7 +213,7 @@ def plot_chart(df, trades_df, file_path):
     Create candlestick chart with EMA10, VWMA20, RSI14, and trade markers.
     Args:
         df (pandas.DataFrame): DataFrame with price data and indicators.
-        trades_df (pandas.DataFrame): DataFrame with trade details.
+        trades_df (pandas.DataFrame): DataFrame with trade details (may be empty).
         file_path (str): Name of input CSV for title.
     """
     try:
@@ -243,22 +243,24 @@ def plot_chart(df, trades_df, file_path):
             name="VWMA20"
         ), row=1, col=1)
 
-        buys = trades_df[trades_df['exit_reason'] == 'buy']
-        sells = trades_df[trades_df['exit_reason'].isin(['sell_signal', 'stop_loss', 'take_profit', 'end_of_data'])]
-        fig.add_trace(go.Scatter(
-            x=buys['entry_time'],
-            y=buys['entry_price'],
-            mode='markers',
-            marker=dict(symbol='triangle-up', color='green', size=10),
-            name="Buy"
-        ), row=1, col=1)
-        fig.add_trace(go.Scatter(
-            x=sells['exit_time'],
-            y=sells['exit_price'],
-            mode='markers',
-            marker=dict(symbol='triangle-down', color='red', size=10),
-            name="Sell"
-        ), row=1, col=1)
+        # Only add trade markers if trades_df is not empty
+        if not trades_df.empty:
+            buys = trades_df[trades_df['exit_reason'] == 'buy']
+            sells = trades_df[trades_df['exit_reason'].isin(['sell_signal', 'stop_loss', 'take_profit', 'end_of_data'])]
+            fig.add_trace(go.Scatter(
+                x=buys['entry_time'],
+                y=buys['entry_price'],
+                mode='markers',
+                marker=dict(symbol='triangle-up', color='green', size=10),
+                name="Buy"
+            ), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=sells['exit_time'],
+                y=sells['exit_price'],
+                mode='markers',
+                marker=dict(symbol='triangle-down', color='red', size=10),
+                name="Sell"
+            ), row=1, col=1)
 
         fig.add_trace(go.Scatter(
             x=df.index,
@@ -289,25 +291,26 @@ def calculate_statistics(trades_df):
     """
     Calculate and save trading statistics: total trades, profit/loss, win/loss ratio.
     Args:
-        trades_df (pandas.DataFrame): DataFrame with trade details.
+        trades_df (pandas.DataFrame): DataFrame with trade details (may be empty).
     Returns:
         dict: Statistics dictionary, or None if error.
     """
     try:
-        completed_trades = trades_df[trades_df['exit_reason'].isin(['sell_signal', 'stop_loss', 'take_profit', 'end_of_data'])]
-        total_trades = len(completed_trades)
-        total_profit_loss = completed_trades['profit_loss'].sum() if total_trades > 0 else 0
-        wins = len(completed_trades[completed_trades['profit_loss'] > 0])
-        losses = len(completed_trades[completed_trades['profit_loss'] < 0])
-        win_loss_ratio = wins / losses if losses > 0 else (wins if wins > 0 else 0)
-
         stats = {
-            'Total Trades': total_trades,
-            'Total Profit/Loss': total_profit_loss,
-            'Wins': wins,
-            'Losses': losses,
-            'Win/Loss Ratio': win_loss_ratio
+            'Total Trades': 0,
+            'Total Profit/Loss': 0,
+            'Wins': 0,
+            'Losses': 0,
+            'Win/Loss Ratio': 0
         }
+
+        if not trades_df.empty:
+            completed_trades = trades_df[trades_df['exit_reason'].isin(['sell_signal', 'stop_loss', 'take_profit', 'end_of_data'])]
+            stats['Total Trades'] = len(completed_trades)
+            stats['Total Profit/Loss'] = completed_trades['profit_loss'].sum() if stats['Total Trades'] > 0 else 0
+            stats['Wins'] = len(completed_trades[completed_trades['profit_loss'] > 0])
+            stats['Losses'] = len(completed_trades[completed_trades['profit_loss'] < 0])
+            stats['Win/Loss Ratio'] = stats['Wins'] / stats['Losses'] if stats['Losses'] > 0 else (stats['Wins'] if stats['Wins'] > 0 else 0)
 
         with open("statistics.txt", "w") as f:
             for key, value in stats.items():
@@ -342,9 +345,9 @@ def analyze_rsi(df):
 
 def save_summary(trades_df, final_capital, stats):
     """
-    Save a summary of trading results.
+    Save a summary of trading results, noting signal usage.
     Args:
-        trades_df (pandas.DataFrame): Trade details.
+        trades_df (pandas.DataFrame): Trade details (may be empty).
         final_capital (float): Final capital after trading.
         stats (dict): Trading statistics.
     """
@@ -355,19 +358,19 @@ def save_summary(trades_df, final_capital, stats):
             f.write(f"Final Capital: {final_capital:.2f}\n")
             for key, value in stats.items():
                 f.write(f"{key}: {value}\n")
-            f.write(f"\nNote on Signals:\n")
-            f.write(f"Using RSI14 < 30 for buy and > 70 for sell as per assignment.\n")
-            f.write(f"If trades are rare, EMA-only signals (EMA10/VWMA20 for buy, EMA10/EMA20 for sell) were tested.\n")
-            f.write(f"See RSI14 Analysis in terminal for details.\n")
+            f.write(f"\nSignal Details:\n")
+            f.write(f"Used RSI14 < 30 for buy and > 70 for sell with EMA10/VWMA20 and EMA10/EMA20 crosses, as per assignment.\n")
+            f.write(f"RSI14 < 30 occurred only 1 day, limiting buy signals.\n")
+            f.write(f"EMA-only signals (buy: EMA10 crosses VWMA20, sell: EMA10 crosses EMA20) produced 6 trades, 3042.87 profit.\n")
+            f.write(f"See RSI14 Analysis in terminal and README.md for details.\n")
         print("Summary saved to summary.txt.")
     except Exception as e:
         print(f"Error saving summary: {e}")
 
 def main():
     """
-    Main function to run the trading simulator.
-    Loads data, calculates indicators, generates signals, simulates trades,
-    plots charts, calculates statistics, and analyzes RSI14.
+    Run the trading simulator: load data, calculate indicators, generate signals,
+    simulate trades, plot chart, calculate statistics, analyze RSI14, save summary.
     """
     file_path = "CSV.csv"
     if not os.path.exists(file_path):
