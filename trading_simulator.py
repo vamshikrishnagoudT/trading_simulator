@@ -47,7 +47,7 @@ def calculate_indicators(df):
         ema10 = EMAIndicator(close=df['close'], window=10)
         df['ema10'] = ema10.ema_indicator()
 
-        # Calculate EMA20 (needed for sell signal)
+        # Calculate EMA20
         ema20 = EMAIndicator(close=df['close'], window=20)
         df['ema20'] = ema20.ema_indicator()
 
@@ -70,22 +70,17 @@ def generate_signals(df):
     Generate buy and sell signals based on EMA, VWMA, and RSI.
     """
     try:
-        # Initialize signal column
         df['signal'] = 0  # 0 = no action, 1 = buy, -1 = sell
 
         # Buy: EMA10 crosses above VWMA20 and RSI14 < 30
-        # Cross above: EMA10 > VWMA20 today and EMA10 <= VWMA20 yesterday
         df['buy_condition'] = (df['ema10'] > df['vwma20']) & (df['ema10'].shift(1) <= df['vwma20'].shift(1))
         df.loc[(df['buy_condition']) & (df['rsi14'] < 30), 'signal'] = 1
 
         # Sell: EMA10 crosses below EMA20 and RSI14 > 70
-        # Cross below: EMA10 < EMA20 today and EMA10 >= EMA20 yesterday
         df['sell_condition'] = (df['ema10'] < df['ema20']) & (df['ema10'].shift(1) >= df['ema20'].shift(1))
         df.loc[(df['sell_condition']) & (df['rsi14'] > 70), 'signal'] = -1
 
-        # Clean up temporary columns
         df = df.drop(['buy_condition', 'sell_condition'], axis=1)
-
         return df
     except Exception as e:
         print(f"Error generating signals: {e}")
@@ -93,48 +88,98 @@ def generate_signals(df):
 
 def simulate_trades(df, initial_capital=10000, transaction_fee=2):
     """
-    Simulate trades based on signals, tracking capital and shares.
+    Simulate trades with stop-loss (5%) and take-profit (10%), tracking detailed trade info.
     """
     try:
         capital = initial_capital
         shares = 0
+        entry_price = 0
         trades = []
+        in_position = False
 
         for date, row in df.iterrows():
             price = row['close']
             signal = row['signal']
 
-            if signal == 1 and capital > 0:  # Buy
-                # Calculate how many shares we can buy
+            if in_position:
+                # Calculate stop-loss (5% below entry) and take-profit (10% above entry)
+                stop_loss_price = entry_price * 0.95
+                take_profit_price = entry_price * 1.10
+
+                # Check exit conditions
+                exit_reason = None
+                if row['low'] <= stop_loss_price:
+                    exit_price = min(price, stop_loss_price)  # Exit at stop-loss or current price
+                    exit_reason = 'stop_loss'
+                elif row['high'] >= take_profit_price:
+                    exit_price = max(price, take_profit_price)  # Exit at take-profit or current price
+                    exit_reason = 'take_profit'
+                elif signal == -1:
+                    exit_price = price
+                    exit_reason = 'sell_signal'
+
+                if exit_reason:
+                    # Sell all shares
+                    revenue = shares * exit_price - transaction_fee
+                    profit_loss = revenue - (shares * entry_price + transaction_fee)
+                    capital += revenue
+                    trades.append({
+                        'entry_time': entry_date,
+                        'exit_time': date,
+                        'entry_price': entry_price,
+                        'exit_price': exit_price,
+                        'shares': shares,
+                        'profit_loss': profit_loss,
+                        'stop_loss': stop_loss_price,
+                        'take_profit': take_profit_price,
+                        'exit_reason': exit_reason,
+                        'capital': capital
+                    })
+                    shares = 0
+                    in_position = False
+
+            if signal == 1 and capital > 0 and not in_position:
+                # Buy shares
                 shares_to_buy = (capital - transaction_fee) // price
                 if shares_to_buy > 0:
                     cost = shares_to_buy * price + transaction_fee
                     capital -= cost
-                    shares += shares_to_buy
+                    shares = shares_to_buy
+                    entry_price = price
+                    entry_date = date
+                    in_position = True
                     trades.append({
-                        'date': date,
-                        'type': 'buy',
-                        'price': price,
-                        'shares': shares_to_buy,
-                        'capital': capital,
-                        'total_shares': shares
+                        'entry_time': entry_date,
+                        'exit_time': None,
+                        'entry_price': entry_price,
+                        'exit_price': None,
+                        'shares': shares,
+                        'profit_loss': 0,
+                        'stop_loss': entry_price * 0.95,
+                        'take_profit': entry_price * 1.10,
+                        'exit_reason': 'buy',
+                        'capital': capital
                     })
 
-            elif signal == -1 and shares > 0:  # Sell
-                # Sell all shares
-                revenue = shares * price - transaction_fee
-                capital += revenue
-                trades.append({
-                    'date': date,
-                    'type': 'sell',
-                    'price': price,
-                    'shares': shares,
-                    'capital': capital,
-                    'total_shares': 0
-                })
-                shares = 0
+        # If still holding shares, close position at the last price
+        if in_position:
+            exit_price = df['close'].iloc[-1]
+            revenue = shares * exit_price - transaction_fee
+            profit_loss = revenue - (shares * entry_price + transaction_fee)
+            capital += revenue
+            trades.append({
+                'entry_time': entry_date,
+                'exit_time': df.index[-1],
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'shares': shares,
+                'profit_loss': profit_loss,
+                'stop_loss': entry_price * 0.95,
+                'take_profit': entry_price * 1.10,
+                'exit_reason': 'end_of_data',
+                'capital': capital
+            })
 
-        # Convert trades to DataFrame
         trades_df = pd.DataFrame(trades)
         return trades_df, capital, shares
     except Exception as e:
@@ -143,7 +188,7 @@ def simulate_trades(df, initial_capital=10000, transaction_fee=2):
 
 def main():
     # Define file path
-    file_path = "TSLA.csv"
+    file_path = "CSV.csv"
     
     # Check if file exists
     if not os.path.exists(file_path):
@@ -175,7 +220,7 @@ def main():
         return
     
     # Save results
-    df.to_csv("data_with_indicators_and_signals_TSLA.csv")
+    df.to_csv("data_with_indicators_and_signals.csv")
     trades_df.to_csv("trades.csv")
     print(f"Data with indicators and signals saved to data_with_indicators_and_signals.csv")
     print(f"Trades saved to trades.csv")
