@@ -3,6 +3,8 @@ import numpy as np
 from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
 import os
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 def load_data(file_path):
     """
@@ -16,7 +18,7 @@ def load_data(file_path):
             raise ValueError(f"Missing required columns. Found: {df.columns.tolist()}")
         df['date'] = pd.to_datetime(df['date'])
         df.set_index('date', inplace=True)
-        df.sort_index(inplace=True)  # Sort by date for correct calculations
+        df.sort_index(inplace=True)  # Sort by date
         if df['volume'].dtype == 'object':
             df['volume'] = df['volume'].str.replace(',', '').astype(float)
         if len(df) < 20:
@@ -65,20 +67,19 @@ def calculate_indicators(df):
 
 def generate_signals(df):
     """
-    Generate buy/sell signals using only EMA crosses to ensure trades.
+    Generate buy/sell signals using EMA crosses (no RSI for now).
     """
     try:
         df['signal'] = 0  # 0 = no action, 1 = buy, -1 = sell
         df['buy_condition'] = (df['ema10'] > df['vwma20']) & (df['ema10'].shift(1) <= df['vwma20'].shift(1))
-        df.loc[df['buy_condition'], 'signal'] = 1  # No RSI condition
+        df.loc[df['buy_condition'], 'signal'] = 1
         df['sell_condition'] = (df['ema10'] < df['ema20']) & (df['ema10'].shift(1) >= df['ema20'].shift(1))
-        df.loc[df['sell_condition'], 'signal'] = -1  # No RSI condition
+        df.loc[df['sell_condition'], 'signal'] = -1
         df = df.drop(['buy_condition', 'sell_condition'], axis=1)
         if df['signal'].eq(1).sum() == 0:
             print("No buy signals. Check if EMA10 crosses VWMA20.")
         if df['signal'].eq(-1).sum() == 0:
             print("No sell signals. Check if EMA10 crosses EMA20.")
-        # Save RSI14 and EMA values for debugging
         df[['rsi14', 'ema10', 'vwma20', 'ema20']].to_csv("indicator_values.csv")
         print("RSI14, EMA10, VWMA20, EMA20 saved to indicator_values.csv.")
         return df
@@ -182,8 +183,140 @@ def simulate_trades(df, initial_capital=10000, transaction_fee=2):
         print(f"Error simulating trades: {e}")
         return None, None, None
 
+def plot_chart(df, trades_df, file_path):
+    """
+    Create candlestick chart with EMA10, VWMA20, RSI14, and trade markers.
+    """
+    try:
+        # Create subplots: candlestick on top, RSI below
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                            subplot_titles=("Price Chart", "RSI14"),
+                            row_heights=[0.7, 0.3])
+
+        # Candlestick
+        fig.add_trace(go.Candlestick(
+            x=df.index,
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            name="Price"
+        ), row=1, col=1)
+
+        # EMA10 and VWMA20
+        fig.add_trace(go.Scatter(
+            x=df.index,
+            y=df['ema10'],
+            line=dict(color='blue', width=1),
+            name="EMA10"
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=df.index,
+            y=df['vwma20'],
+            line=dict(color='orange', width=1),
+            name="VWMA20"
+        ), row=1, col=1)
+
+        # Trade markers
+        buys = trades_df[trades_df['exit_reason'] == 'buy']
+        sells = trades_df[trades_df['exit_reason'].isin(['sell_signal', 'stop_loss', 'take_profit', 'end_of_data'])]
+        fig.add_trace(go.Scatter(
+            x=buys['entry_time'],
+            y=buys['entry_price'],
+            mode='markers',
+            marker=dict(symbol='triangle-up', color='green', size=10),
+            name="Buy"
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=sells['exit_time'],
+            y=sells['exit_price'],
+            mode='markers',
+            marker=dict(symbol='triangle-down', color='red', size=10),
+            name="Sell"
+        ), row=1, col=1)
+
+        # RSI14
+        fig.add_trace(go.Scatter(
+            x=df.index,
+            y=df['rsi14'],
+            line=dict(color='purple', width=1),
+            name="RSI14"
+        ), row=2, col=1)
+        # Add RSI threshold lines (30, 70)
+        fig.add_hline(y=30, line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+
+        # Update layout
+        fig.update_layout(
+            title=f"Trading Simulator - {file_path}",
+            xaxis_title="Date",
+            yaxis_title="Price",
+            xaxis_rangeslider_visible=False,
+            showlegend=True,
+            height=800
+        )
+        fig.update_xaxes(title_text="Date", row=2, col=1)
+        fig.update_yaxes(title_text="RSI14", row=2, col=1)
+
+        # Save chart
+        fig.write_html("chart.html")
+        print("Chart saved to chart.html. Open in a browser to view.")
+    except Exception as e:
+        print(f"Error plotting chart: {e}")
+
+def calculate_statistics(trades_df):
+    """
+    Calculate total trades, profit/loss, win/loss ratio.
+    """
+    try:
+        # Filter completed trades (exclude open buys)
+        completed_trades = trades_df[trades_df['exit_reason'].isin(['sell_signal', 'stop_loss', 'take_profit', 'end_of_data'])]
+        total_trades = len(completed_trades)
+        total_profit_loss = completed_trades['profit_loss'].sum() if total_trades > 0 else 0
+        wins = len(completed_trades[completed_trades['profit_loss'] > 0])
+        losses = len(completed_trades[completed_trades['profit_loss'] < 0])
+        win_loss_ratio = wins / losses if losses > 0 else (wins if wins > 0 else 0)
+
+        stats = {
+            'Total Trades': total_trades,
+            'Total Profit/Loss': total_profit_loss,
+            'Wins': wins,
+            'Losses': losses,
+            'Win/Loss Ratio': win_loss_ratio
+        }
+
+        # Save to file
+        with open("statistics.txt", "w") as f:
+            for key, value in stats.items():
+                f.write(f"{key}: {value}\n")
+        print("Statistics saved to statistics.txt:")
+        for key, value in stats.items():
+            print(f"{key}: {value}")
+
+        return stats
+    except Exception as e:
+        print(f"Error calculating statistics: {e}")
+        return None
+
+def analyze_rsi(df):
+    """
+    Check if RSI14 meets assignment thresholds (< 30, > 70).
+    """
+    try:
+        rsi_below_30 = (df['rsi14'] < 30).sum()
+        rsi_above_70 = (df['rsi14'] > 70).sum()
+        print(f"RSI14 Analysis:")
+        print(f"Days with RSI14 < 30: {rsi_below_30}")
+        print(f"Days with RSI14 > 70: {rsi_above_70}")
+        if rsi_below_30 == 0 or rsi_above_70 == 0:
+            print("Warning: RSI14 thresholds (< 30, > 70) rarely or never met. EMA-only signals used.")
+        else:
+            print("RSI14 thresholds met. Consider reverting to RSI14 < 30/> 70 in signals.")
+    except Exception as e:
+        print(f"Error analyzing RSI14: {e}")
+
 def main():
-    file_path = "TSLA.csv"
+    file_path = "CSV.csv"
     if not os.path.exists(file_path):
         print(f"File {file_path} not found in the project folder.")
         return
@@ -203,11 +336,20 @@ def main():
     if trades_df is None:
         print("Failed to simulate trades. Exiting.")
         return
-    df.to_csv("data_with_indicators_and_signals_TSLA.csv")
+    df.to_csv("data_with_indicators_and_signals.csv")
     trades_df.to_csv("trades.csv")
     print(f"Data with indicators and signals saved to data_with_indicators_and_signals.csv")
     print(f"Trades saved to trades.csv")
     print(f"Final capital: {final_capital:.2f}, Final shares: {final_shares}")
+
+    # Plot chart
+    plot_chart(df, trades_df, file_path)
+
+    # Calculate statistics
+    calculate_statistics(trades_df)
+
+    # Analyze RSI14
+    analyze_rsi(df)
 
 if __name__ == "__main__":
     main()
