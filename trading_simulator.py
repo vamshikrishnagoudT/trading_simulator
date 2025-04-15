@@ -372,7 +372,7 @@ def main():
     Run the trading simulator: load data, calculate indicators, generate signals,
     simulate trades, plot chart, calculate statistics, analyze RSI14, save summary.
     """
-    file_path = "CSV.csv"
+    file_path = "TSLA.csv"
     if not os.path.exists(file_path):
         print(f"File {file_path} not found in the project folder.")
         return
@@ -397,7 +397,7 @@ def main():
         print("Failed to simulate trades. Exiting.")
         return
 
-    df.to_csv("data_with_indicators_and_signals.csv")
+    df.to_csv("data_with_indicators_and_signals_TSLA.csv")
     trades_df.to_csv("trades.csv")
     print(f"Data with indicators and signals saved to data_with_indicators_and_signals.csv")
     print(f"Trades saved to trades.csv")
